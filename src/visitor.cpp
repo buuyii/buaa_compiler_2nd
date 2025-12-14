@@ -179,12 +179,15 @@ VisitExpsResult Visitor::visit_exps<NodeType::L_VAL>(ASTNodePtr &lval) {
         (lval->get_children().size() > 1)) {
         std::list<std::shared_ptr<Instruction>> ins_list;
         std::vector<std::shared_ptr<Value>> indexes;
-        if (std::dynamic_pointer_cast<PointerType>(symbol->get_type())->is_pointer_ty()) {
+        if (type->get_reference_type()->is_pointer_ty())
+        {
             // TODO inner type is pointer, load first
             auto load_ptr = Load::create(cur_basic_block, symbol, gen_local_var_name());
             ins_list.push_back(load_ptr);
             symbol = load_ptr;
-        } else {
+        }
+        else
+        {
             // otherwise
             indexes.push_back(
                 std::make_shared<ConstantInt>(IntegerType::get(32), 0));
@@ -553,13 +556,30 @@ namespace frontend::visitor {
             return zero;
         }
         auto ident = symbol_table.lookup(std::get<TokenPtr>(lval->get_children().front())->get_content())->first;
+        std::shared_ptr<Constant> arr_const = nullptr;
+
         if (auto glv = std::dynamic_pointer_cast<GlobalVariable>(ident)) {
-            return glv->get_init_value();
+            arr_const = glv->get_init_value();
         } else if (auto con = std::dynamic_pointer_cast<Constant>(ident)) {
-            return con;
+            arr_const = con;
         } else {
             //TODO ERROR
             throw std::runtime_error("unexpected identifier type");
+        }
+        // check if has index
+        if (lval->get_children().size() == 1)
+        {
+            return arr_const;
+        } else {
+            auto &exp = std::get<ASTNodePtr>(lval->get_children()[2]);
+            auto [val, ins_list] = visit_exps<NodeType::EXP>(exp);
+            int index = std::dynamic_pointer_cast<ConstantInt>(val)->get_val();
+            auto array_const = std::dynamic_pointer_cast<ConstantArray>(arr_const);
+            if (!array_const)
+            {
+                throw std::runtime_error("LVal symbol is not a constant array");
+            }
+            return array_const->get_vals()[index];
         }
     }
 
@@ -780,28 +800,123 @@ namespace frontend::visitor {
     std::list<std::shared_ptr<Instruction>> Visitor::visit<NodeType::PRINTF_STMT, Instruction, LIST>(ASTNodePtr &printf_stmt) {
         // 'printf' '(' 'StringConst' {',' Exp} ')' ';'
         std::list<std::shared_ptr<Instruction>> ins_list;
+        std::list<std::shared_ptr<Value>> val_list;
         auto &children = printf_stmt->get_children();
         // format string
-        auto format_string = std::get<TokenPtr>(children[2])->get_content();     
-        // count "%d"
-        int count = 0;
-        for (size_t i = 0; i < format_string.size(); i++) 
-        {
-            if (format_string.substr(i, 2) == "%d") {
-                count++;
-            }
-        }
+        auto format_string = std::get<TokenPtr>(children[2])->get_content();
         int use = 0;
-        for (int i = 4; i < children.size() - 2; i+=2) 
+        for (int i = 4; i < children.size() - 2; i += 2)
         {
             auto [val, new_ins] = visit_exps<NodeType::EXP>(std::get<ASTNodePtr>(children[i]));
             ins_list.splice(ins_list.end(), new_ins);
+            val_list.push_back(val);
             use++;
         }
-        // more... ins gep
-
+        // count "%d"
+        int count = 0;
+        for (size_t i = 0; i < format_string.size() && count < use; i++) 
+        {
+            if (format_string.substr(i, 2) == "%d") {
+                count++;
+                i++;
+            }
+        }
         if (use != count) {
             error_report(std::get<TokenPtr>(children.front())->get_line(), 'l');
+        }
+        auto putint_rec = symbol_table.lookup("putint");
+        auto putch_rec = symbol_table.lookup("putch");
+        auto putint_func =
+            std::dynamic_pointer_cast<Function>(putint_rec->first);
+        auto putch_func =
+            std::dynamic_pointer_cast<Function>(putch_rec->first);
+        
+        //reduce ""
+        if (!format_string.empty() &&
+            format_string.front() == '\"' &&
+            format_string.back() == '\"')
+        {
+            format_string =
+                format_string.substr(1, format_string.size() - 2);
+        }
+
+        auto val_it = val_list.begin();
+        for (size_t i = 0; i < format_string.size(); ++i)
+        {
+            char c = format_string[i];
+
+            if (c == '\\')
+            {
+                // deal "\"
+                if (i + 1 >= format_string.size())
+                    break;
+                char esc = format_string[++i];
+                char real_char;
+                switch (esc)
+                {
+                case 'n':
+                    real_char = '\n';
+                    break;
+                case 't':
+                    real_char = '\t';
+                    break;
+                case '\\':
+                    real_char = '\\';
+                    break;
+                case '\"':
+                    real_char = '\"';
+                    break;
+                default:
+                    // 
+                    real_char = esc;
+                    break;
+                }
+
+                std::vector<std::shared_ptr<Value>> args;
+                args.push_back(std::make_shared<ConstantInt>(
+                    IntegerType::get(32), static_cast<int>(real_char)));
+                auto call_putch = Call::create(
+                    cur_basic_block, putch_func, args, gen_local_var_name());
+                ins_list.push_back(call_putch);
+            }
+            else if (c == '%' && i + 1 < format_string.size() && format_string[i + 1] == 'd')
+            {
+                // %d ->  int 
+                i++; // skip 'd'
+
+                if (val_it != val_list.end())
+                {
+                    auto val = *val_it;
+                    ++val_it;
+
+                    // convert to i32 then putint
+                    auto [converted, conv_ins] =
+                        make_collect_type_conversion(val,
+                                                     IntegerType::get(32));
+                    ins_list.splice(ins_list.end(), conv_ins);
+
+                    std::vector<std::shared_ptr<Value>> args;
+                    args.push_back(converted);
+                    auto call_putint = Call::create(
+                        cur_basic_block, putint_func, args, gen_local_var_name());
+                    ins_list.push_back(call_putint);
+                }
+                else
+                {
+                    // 
+                    continue;
+                }
+            }
+            else
+            {
+                //  putch
+                std::vector<std::shared_ptr<Value>> args;
+                args.push_back(std::make_shared<ConstantInt>(
+                    IntegerType::get(32), static_cast<int>(c)));
+                auto call_putch = Call::create(
+                    cur_basic_block, putch_func, args, gen_local_var_name());
+                ins_list.push_back(call_putch);
+            }
         }
         return ins_list;
     }
@@ -989,38 +1104,51 @@ namespace frontend::visitor {
         std::list<std::shared_ptr<BasicBlock>> basic_block_list;
 
         // enter scope
+
         auto &children = s_for_stmt->get_children();
+
+        auto cond_basic_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
+        auto body_basic_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
+        auto step_basic_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
+        auto finish_basic_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
+
+        basic_block_list.push_back(cond_basic_block);
+        basic_block_list.push_back(body_basic_block);
+        basic_block_list.push_back(step_basic_block);
+        basic_block_list.push_back(finish_basic_block);
 
         // init ForStmt
         bool has_init = !std::holds_alternative<TokenPtr>(children[2]);
-        auto init_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
-        basic_block_list.push_back(init_block);
-
-        //cond basic block
-        bool has_cond = has_init ? std::holds_alternative<ASTNodePtr>(children[4]) && std::get<ASTNodePtr>(children[4])->is_type(NodeType::COND) :
-                                   std::holds_alternative<ASTNodePtr>(children[3]) && std::get<ASTNodePtr>(children[3])->is_type(NodeType::COND);
-        auto cond_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
-        basic_block_list.push_back(cond_block);
-
-        // stmt2
-        bool has_stmt2;
-        if (has_init && has_cond) {
-            has_stmt2 = std::holds_alternative<ASTNodePtr>(children[6]) && std::get<ASTNodePtr>(children[6])->is_type(NodeType::FOR_STMT);
-        } else if (has_init || has_cond) {
-            has_stmt2 = std::holds_alternative<ASTNodePtr>(children[5]) && std::get<ASTNodePtr>(children[5])->is_type(NodeType::FOR_STMT);
-        } else {
-            has_stmt2 = std::holds_alternative<ASTNodePtr>(children[4]) && std::get<ASTNodePtr>(children[4])->is_type(NodeType::FOR_STMT);
+        if (has_init) {
+            auto &for_init = std::get<ASTNodePtr>(children[2]);
+            auto &specific_init = std::get<ASTNodePtr>(for_init->get_children().front());
+            cur_basic_block->add_instructions(visit<NodeType::FOR_STMT, Instruction, LIST>(for_init));
         }
-        auto stmt2_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
-        basic_block_list.push_back(stmt2_block);
 
-        //add Br
-        cur_basic_block->add_instructions({Br::create(cur_basic_block, cond_block, gen_local_var_name())});
+        cur_basic_block->add_instructions(
+            {Br::create(cur_basic_block, cond_basic_block, gen_local_var_name())});
 
-        //more ...
-        //
+        //add info
+        loop_entry_blocks.push_back(step_basic_block);
+        loop_exit_blocks.push_back(finish_basic_block);
+
+        // cond basic block
+        cur_basic_block = cond_basic_block;
+        bool has_cond = has_init ? std::holds_alternative<ASTNodePtr>(children[4]) && std::get<ASTNodePtr>(children[4])->is_type(NodeType::COND) : std::holds_alternative<ASTNodePtr>(children[3]) && std::get<ASTNodePtr>(children[3])->is_type(NodeType::COND);
+        if (has_cond) {
+            auto &cond_node = std::get<ASTNodePtr>(children[3 + has_init]);
+            true_basic_block_list.push_back(body_basic_block);
+            false_basic_block_list.push_back(finish_basic_block);
+            basic_block_list.splice(
+                basic_block_list.end(),
+                visit<NodeType::COND, BasicBlock, LIST>(cond_node));
+        } else {
+            cur_basic_block->add_instructions(
+                {Br::create(cur_basic_block, body_basic_block, gen_local_var_name())});
+        }
+        // body basic block
+        cur_basic_block = body_basic_block;
         loop_depth++;
-
         auto &stmt_child = std::get<ASTNodePtr>(children.back())->get_children();
         auto &stmt_head = stmt_child.front();
         auto is_token = std::holds_alternative<TokenPtr>(stmt_head);
@@ -1039,8 +1167,36 @@ namespace frontend::visitor {
             cur_basic_block->add_instructions(visit<NodeType::STMT, Instruction, LIST>(std::get<ASTNodePtr>(children.back())));
         }
 
+        cur_basic_block->add_instructions(
+            {Br::create(cur_basic_block, step_basic_block, gen_local_var_name())});
+        
         loop_depth--;
-        return {};
+
+        // step
+        cur_basic_block = step_basic_block;
+        bool has_step;
+        if (has_init && has_cond) {
+            has_step = std::holds_alternative<ASTNodePtr>(children[6]) && std::get<ASTNodePtr>(children[6])->is_type(NodeType::FOR_STMT);
+        } else if (has_init || has_cond) {
+            has_step = std::holds_alternative<ASTNodePtr>(children[5]) && std::get<ASTNodePtr>(children[5])->is_type(NodeType::FOR_STMT);
+        } else {
+            has_step = std::holds_alternative<ASTNodePtr>(children[4]) && std::get<ASTNodePtr>(children[4])->is_type(NodeType::FOR_STMT);
+        }
+        if (has_step) {
+            auto &for_step = std::get<ASTNodePtr>(children[4 + has_cond + has_init]);
+            cur_basic_block->add_instructions(
+                visit<NodeType::FOR_STMT, Instruction, LIST>(for_step));
+        }
+        cur_basic_block->add_instructions(
+            {Br::create(cur_basic_block, cond_basic_block, gen_local_var_name())});
+
+        //more ...
+        loop_entry_blocks.pop_back();
+        loop_exit_blocks.pop_back();
+
+        cur_basic_block = finish_basic_block;
+
+        return basic_block_list;
     }
 
     template <>
@@ -1051,11 +1207,9 @@ namespace frontend::visitor {
             auto &break_token = std::get<TokenPtr>(break_stmt->get_children().front());
             error_report(break_token->get_line(), 'm');
         }
-        return {};
         auto finish_basic_block = loop_exit_blocks.back();
         cur_basic_block->add_instructions({Br::create(cur_basic_block, finish_basic_block, gen_local_var_name())});
-        cur_basic_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
-        return {cur_basic_block};
+        return {};
     }
 
     template <>
@@ -1066,11 +1220,9 @@ namespace frontend::visitor {
             auto &continue_token = std::get<TokenPtr>(continue_stmt->get_children().front());
             error_report(continue_token->get_line(), 'm');
         }
-        return {};
         auto while_basic_block = loop_entry_blocks.back();
         cur_basic_block->add_instructions({Br::create(cur_basic_block, while_basic_block, gen_local_var_name())});
-        cur_basic_block = std::make_shared<BasicBlock>(cur_function, gen_block_name());
-        return {cur_basic_block};
+        return {};
     }
 
     template <>
@@ -1581,7 +1733,10 @@ namespace frontend::visitor {
         if (is_static) {
             for (size_t i = 2; i< children.size(); i += 2) {
                 auto &var_def = std::get<ASTNodePtr>(children[i]);
-                visit<NodeType::VAR_DEF, GlobalVariable, SINGLE>(var_def);
+                auto var = visit<NodeType::VAR_DEF, GlobalVariable, SINGLE>(var_def);
+                var->is_sp_static = true;
+                this->module->add_global_variables({var});
+
                 // TODO ERROR
             }
         } else {
@@ -1614,7 +1769,7 @@ namespace frontend::visitor {
             }
         } else {
             for (size_t i = 1; i < children.size(); i += 2) {
-                visit<NodeType::VAR_DEF, Instruction, LIST>(std::get<ASTNodePtr>(children[i]));
+                result_list.push_back(visit<NodeType::VAR_DEF, GlobalVariable, SINGLE>(std::get<ASTNodePtr>(children[i])));
             }
         }
         return result_list;
@@ -1868,13 +2023,33 @@ namespace frontend::visitor{
                                            {
             if (std::holds_alternative<ASTNodePtr>(child)) {
                 auto &node = std::get<ASTNodePtr>(child);
-                auto value = node->get_type() == NodeType::CONST_EXP ? visit<NodeType::CONST_EXP, Constant, SINGLE>(node) :
-                                                        visit<NodeType::EXP, Constant, SINGLE>(node) ;
+                
+                std::shared_ptr<Value> value;
+                std::list<std::shared_ptr<Instruction>> new_ins;
+
+                // 关键修复 1：
+                // 对于初始化列表中的每个元素，我们必须调用能生成运行时IR指令的函数。
+                // 无论是 ConstExp 还是 Exp，我们都应使用 visit_exps，它会返回 Value 和 指令列表。
+                // 否则，如果使用 visit<... , Constant, ...>，会尝试常量求值，导致 getint() 失败。
+                if (node->get_type() == NodeType::CONST_EXP) {
+                     // 如果是常量表达式，使用 visit_exps<CONST_EXP> 进行求值并返回常量值
+                    std::tie(value, new_ins) = visit_exps<NodeType::CONST_EXP>(node);
+                } else {
+                     // 如果是运行时表达式（如 getint()），使用 visit_exps<EXP> 
+                     // 这会生成 CALL 指令等，并返回一个 Value (例如 %t1)
+                    std::tie(value, new_ins) = visit_exps<NodeType::EXP>(node);
+                }
+                
+                // 关键修复 2：
+                // 收集表达式求值过程中生成的所有指令。
+                ins_list.splice(ins_list.end(), new_ins); 
+
                 initializers.push_back(
                     std::make_shared<ArrayValueWrapper<Value>>(value));
-            } });
-            return {std::make_shared<ArrayValueWrapper<Value>>(initializers), ins_list};
-        }
+            }
+        });
+        return {std::make_shared<ArrayValueWrapper<Value>>(initializers), ins_list};
+    }
         if (array_init_val->get_type() == NodeType::CONST_INIT_VAL)
         {
             auto [tmp_val, new_ins] =
@@ -1892,6 +2067,8 @@ namespace frontend::visitor{
             throw std::runtime_error("invalid in visit_array_init_val");
         }
     }
+
+    
 
     std::shared_ptr<Constant> Visitor::wrap_cast_to_const(const std::shared_ptr<ArrayValueWrapper<Constant>> &wrap,
                                                           const std::shared_ptr<Type> &arr_type) {

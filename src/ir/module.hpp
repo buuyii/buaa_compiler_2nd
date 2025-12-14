@@ -67,7 +67,7 @@ public:
         str += "declare void @llvm.memset.p0.i32(i8* nocapture writeonly, i8, i32, i1 immarg)\n"; //what
         str += "\n";
         for (const auto &func : Function::get_lib_funcs()) {
-            str += "declate dso_local " + func->get_return_type()->to_string() + " " + func->get_name() + "(";
+            str += "declare dso_local " + func->get_return_type()->to_string() + " " + func->get_name() + "(";
             for (size_t i = 0; i < func->get_param_types().size(); i++) {
                 if (i)
                     str += ", ";

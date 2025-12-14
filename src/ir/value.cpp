@@ -110,7 +110,19 @@ const std::unordered_map<InstructionType, std::string> CONVERSION_INS_TYPE_TO_ST
 
 namespace ir {
 std::shared_ptr<Function> Function::getint = 
-    std::make_shared<Function>(FunctionType::get(IntegerType::get(32), {}), "@getint");      
+    std::make_shared<Function>(FunctionType::get(IntegerType::get(32), {}), "@getint");
+std::shared_ptr<Function> Function::getchar =
+    std::make_shared<Function>(FunctionType::get(IntegerType::get(32), {}), "@getchar");
+std::shared_ptr<Function> Function::getarray =
+    std::make_shared<Function>(FunctionType::get(IntegerType::get(32), {PointerType::get(IntegerType::get(32))}), "@getarray");
+std::shared_ptr<Function> Function::putint =
+    std::make_shared<Function>(FunctionType::get(VoidType::get(), {IntegerType::get(32)}), "@putint");
+std::shared_ptr<Function> Function::putch =
+    std::make_shared<Function>(FunctionType::get(VoidType::get(), {IntegerType::get(32)}), "@putch");
+std::shared_ptr<Function> Function::putarray = std::make_shared<Function>(
+    FunctionType::get(VoidType::get(), {IntegerType::get(32), PointerType::get(IntegerType::get(32))}), "@putarray");
+std::shared_ptr<Function> Function::putstr = std::make_shared<Function>(
+    FunctionType::get(VoidType::get(), {PointerType::get(IntegerType::get(32))}), "@putstr");
 }
 
 namespace ir {

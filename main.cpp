@@ -20,19 +20,25 @@ std::ifstream src_file;
 std::ofstream out_file;
 std::ofstream error_file;
 std::set<ErrorInfo> error_set;
+std::ofstream llvm_file;
 
 int main(int, char **)
 {
-    std::string filePath = "testfile.txt";
+    std::string filePath = "testfile.c";
     std::string outPath = "symbol.txt";
     std::string errPath = "error.txt";
+    std::string llvmPath = "llvm_ir.txt";
 
     src_file.open(filePath);
     out_file.open(outPath);
     error_file.open(errPath);
+    llvm_file.open(llvmPath);
+    if(!src_file.is_open())
+        src_file.open("testfile.txt");
     if (!src_file.is_open())
     {
         std::cerr << "Failed to open src_file: " << filePath << std::endl;
+        
         return 1;
     }
     std::stringstream buffer;
@@ -62,6 +68,8 @@ int main(int, char **)
 
     const auto &comp_unit = std::get<frontend::ast::ASTNodePtr>(ast);
     visitor.visit(comp_unit);
+
+    llvm_file << module->to_string();
 
     output_errors();
     return 0;

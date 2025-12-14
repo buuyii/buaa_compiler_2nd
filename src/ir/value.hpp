@@ -123,14 +123,21 @@ public:
     std::string to_string() const override;
 
     static std::shared_ptr<Function> getint;
-    
-    static const auto &get_lib_funcs() {
-        const static std::array<std::shared_ptr<Function>, 1> lib_funcs = {
-            getint,
+    static std::shared_ptr<Function> getchar;
+    static std::shared_ptr<Function> getarray;
+    static std::shared_ptr<Function> putint;
+    static std::shared_ptr<Function> putch;
+    static std::shared_ptr<Function> putarray;
+    static std::shared_ptr<Function> putstr;
+
+    static const auto &get_lib_funcs()
+    {
+        const static std::array<std::shared_ptr<Function>, 7> lib_funcs = {
+            getint, getchar, getarray, putint, putch, putarray, putstr 
         };
         return lib_funcs;
     }
-    
+
     static bool is_lib( const std::shared_ptr<Function> &func) {
         auto lib_funcs = get_lib_funcs();
         return std::find(lib_funcs.begin(), lib_funcs.end(), func) != lib_funcs.end();
